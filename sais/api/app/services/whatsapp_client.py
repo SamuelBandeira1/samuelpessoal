@@ -132,3 +132,14 @@ def send_interactive_buttons(
     }
     message_id, response = _dispatch("sendButtons", payload)
     return message_id, response, payload
+
+
+def send_text(
+    to: str,
+    body: str,
+) -> tuple[str, dict, dict]:
+    """Send a simple text message via WhatsApp."""
+
+    payload = {"number": to, "text": body}
+    message_id, response = _dispatch("sendText", payload)
+    return message_id, response, payload

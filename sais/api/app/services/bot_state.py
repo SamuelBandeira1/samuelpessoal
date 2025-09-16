@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Final
+from typing import Any, Final
 
 import redis
 
@@ -12,6 +13,7 @@ from app.core.config import settings
 
 _STATE_KEY_TEMPLATE: Final[str] = "sais:wa:state:{phone}"
 _LAST_INTERACTION_KEY_TEMPLATE: Final[str] = "sais:wa:last_interaction:{phone}"
+_CONTEXT_KEY_TEMPLATE: Final[str] = "sais:wa:context:{phone}"
 _STATE_TTL_SECONDS: Final[int] = 60 * 60 * 24 * 7  # one week
 
 
@@ -63,6 +65,40 @@ def record_last_interaction(phone_e164: str, timestamp: datetime) -> None:
         _STATE_TTL_SECONDS,
         timestamp.isoformat(),
     )
+
+
+def get_context(phone_e164: str) -> dict[str, Any]:
+    """Return the structured context stored for the contact."""
+
+    client = _get_client()
+    raw_value = client.get(_CONTEXT_KEY_TEMPLATE.format(phone=phone_e164))
+    if not raw_value:
+        return {}
+    try:
+        data = json.loads(raw_value)
+        if isinstance(data, dict):
+            return data
+    except json.JSONDecodeError:
+        return {}
+    return {}
+
+
+def set_context(phone_e164: str, context: dict[str, Any]) -> None:
+    """Persist conversation context for the contact."""
+
+    client = _get_client()
+    client.setex(
+        _CONTEXT_KEY_TEMPLATE.format(phone=phone_e164),
+        _STATE_TTL_SECONDS,
+        json.dumps(context, ensure_ascii=False),
+    )
+
+
+def clear_context(phone_e164: str) -> None:
+    """Remove any stored context for the contact."""
+
+    client = _get_client()
+    client.delete(_CONTEXT_KEY_TEMPLATE.format(phone=phone_e164))
 
 
 def last_interaction_within(

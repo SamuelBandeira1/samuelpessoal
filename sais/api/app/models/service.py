@@ -22,4 +22,5 @@ class Service(Base, TimestampMixin):
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    duration_minutes: Mapped[int] = mapped_column(Integer, default=30)
+    duration_min: Mapped[int] = mapped_column(Integer, default=30)
+    price_cents: Mapped[int] = mapped_column(Integer, default=0)

@@ -10,21 +10,79 @@ from jobs.app.celery_app import celery_app
 logger = get_task_logger(__name__)
 
 
-@celery_app.task(name="jobs.send_reminder")
-def send_reminder(appointment_id: str, eta: datetime | None = None) -> dict[str, Any]:
-    """Send a reminder notification for an appointment."""
+def _resolve_when(scheduled_start: str | None, delta: timedelta) -> datetime:
+    """Return the timestamp when a reminder should be dispatched."""
 
-    eta = eta or datetime.utcnow()
-    logger.info("Sending reminder for appointment %s at %s", appointment_id, eta.isoformat())
-    return {"appointment_id": appointment_id, "scheduled_for": eta.isoformat()}
+    if scheduled_start:
+        try:
+            start = datetime.fromisoformat(scheduled_start)
+            return start - delta
+        except ValueError:
+            logger.warning("Invalid scheduled_start %s", scheduled_start)
+    return datetime.utcnow()
 
 
-@celery_app.task(name="jobs.dispatch_message")
-def dispatch_message(recipient: str, channel: str = "whatsapp") -> dict[str, Any]:
-    """Dispatch a message to the configured channel."""
+def _emit_reminder(
+    *,
+    appointment_id: str,
+    window: str,
+    scheduled_start: str | None,
+    delta: timedelta,
+) -> dict[str, Any]:
+    eta = _resolve_when(scheduled_start, delta)
+    logger.info(
+        "Dispatching %s reminder for appointment %s at %s",
+        window,
+        appointment_id,
+        eta.isoformat(),
+    )
+    return {
+        "appointment_id": appointment_id,
+        "reminder_window": window,
+        "dispatch_at": eta.isoformat(),
+    }
 
-    logger.info("Dispatching %s message to %s", channel, recipient)
-    return {"recipient": recipient, "channel": channel, "status": "queued"}
+
+@celery_app.task(name="jobs.send_reminder_d2")
+def send_reminder_d2(
+    appointment_id: str, scheduled_start: str | None = None
+) -> dict[str, Any]:
+    """Send the D-2 reminder (two days before)."""
+
+    return _emit_reminder(
+        appointment_id=appointment_id,
+        window="D-2",
+        scheduled_start=scheduled_start,
+        delta=timedelta(days=2),
+    )
+
+
+@celery_app.task(name="jobs.send_reminder_d1")
+def send_reminder_d1(
+    appointment_id: str, scheduled_start: str | None = None
+) -> dict[str, Any]:
+    """Send the D-1 reminder (one day before)."""
+
+    return _emit_reminder(
+        appointment_id=appointment_id,
+        window="D-1",
+        scheduled_start=scheduled_start,
+        delta=timedelta(days=1),
+    )
+
+
+@celery_app.task(name="jobs.send_reminder_h2")
+def send_reminder_h2(
+    appointment_id: str, scheduled_start: str | None = None
+) -> dict[str, Any]:
+    """Send the H-2 reminder (two hours before)."""
+
+    return _emit_reminder(
+        appointment_id=appointment_id,
+        window="H-2",
+        scheduled_start=scheduled_start,
+        delta=timedelta(hours=2),
+    )
 
 
 @celery_app.task(name="jobs.flag_no_show")

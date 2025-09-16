@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Sequence
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.responses import PlainTextResponse
@@ -15,15 +16,39 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.session import get_db
-from app.models import MessageLog, Tenant
+from app.models import (
+    Appointment,
+    AppointmentOrigin,
+    AppointmentStatus,
+    MessageLog,
+    Patient,
+    Provider,
+    ScheduleSlot,
+    Service,
+    SlotStatus,
+    Tenant,
+)
 from app.services import (
     BotState,
+    clear_context,
+    get_context,
+    get_state,
     record_last_interaction,
     send_interactive_buttons,
     send_template,
+    send_text,
+    set_context,
     set_state,
 )
 from app.services.bot_state import last_interaction_within
+from app.services.scheduling import (
+    book_slot,
+    ensure_utc,
+    get_slot_by_start,
+    offer_slots,
+    serialize_appointment,
+    tenant_timezone,
+)
 
 app = FastAPI(title=settings.app_name, version="0.1.0")
 
@@ -35,13 +60,17 @@ MENU_BUTTONS = ["Agendar", "Reagendar", "Falar com atendente"]
 
 
 class AppointmentCreate(BaseModel):
-    tenant_id: str
-    patient_id: str
-    provider_id: str
-    service_id: str | None = None
-    schedule_slot_id: str | None = None
-    scheduled_start: datetime | None = None
-    scheduled_end: datetime | None = None
+    patient_id: UUID
+    provider_id: UUID
+    service_id: UUID
+    start_ts: datetime
+    origin: AppointmentOrigin = AppointmentOrigin.WEB
+    notes: str | None = None
+    schedule_slot_id: UUID | None = None
+
+
+class AppointmentUpdate(BaseModel):
+    status: AppointmentStatus
     notes: str | None = None
 
 
@@ -112,6 +141,57 @@ def persist_message_log(
     return log_entry
 
 
+def log_outbound_message(
+    db: Session,
+    *,
+    tenant_id: UUID,
+    phone: str,
+    request_payload: Any,
+    response_payload: Any,
+    response_type: str,
+    session_active: bool,
+    metadata_extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Persist an outbound message in the log and return response metadata."""
+
+    message_id = None
+    if isinstance(response_payload, dict):
+        message_id = (
+            response_payload.get("key", {}).get("id")
+            or response_payload.get("id")
+            or response_payload.get("message", {}).get("key", {}).get("id")
+        )
+
+    metadata = {
+        "direction": "outbound",
+        "type": response_type,
+        "session_active": session_active,
+        "integration": "evolution_api",
+    }
+    if message_id:
+        metadata["wa_message_id"] = message_id
+    if metadata_extra:
+        metadata.update(metadata_extra)
+
+    now = datetime.now(timezone.utc)
+    persist_message_log(
+        db,
+        tenant_id=tenant_id,
+        channel="whatsapp",
+        recipient=phone,
+        payload={"request": request_payload, "response": response_payload},
+        metadata=metadata,
+        status="sent",
+        sent_at=now,
+    )
+    record_last_interaction(phone, now)
+    return {
+        "message_id": message_id,
+        "type": response_type,
+        "session_active": session_active,
+    }
+
+
 def parse_timestamp(raw_timestamp: str | None) -> datetime:
     """Convert WhatsApp timestamps (seconds since epoch) to timezone-aware datetimes."""
 
@@ -133,6 +213,169 @@ def jid_to_phone(jid: str | None) -> str | None:
     digits = re.sub(r"\D", "", phone)
     return digits or None
 
+
+def ensure_patient_profile(
+    db: Session, *, tenant_id: UUID, phone_number: str, display_name: str | None
+) -> Patient:
+    """Return a patient for the phone number, creating a placeholder if needed."""
+
+    stmt = select(Patient).where(
+        Patient.tenant_id == tenant_id, Patient.phone_number == phone_number
+    )
+    patient = db.execute(stmt).scalars().first()
+    if patient:
+        return patient
+
+    placeholder_name = display_name or f"Paciente {phone_number[-4:]}"
+    patient = Patient(
+        tenant_id=tenant_id,
+        full_name=placeholder_name,
+        phone_number=phone_number,
+    )
+    db.add(patient)
+    db.flush()
+    return patient
+
+
+def service_options(db: Session, tenant_id: UUID) -> list[dict[str, Any]]:
+    """Fetch the available services for the tenant."""
+
+    stmt = select(Service).where(Service.tenant_id == tenant_id).order_by(Service.name)
+    services = db.execute(stmt).scalars().all()
+    return [
+        {
+            "id": str(service.id),
+            "name": service.name,
+            "duration_min": service.duration_min,
+            "price_cents": service.price_cents,
+        }
+        for service in services
+    ]
+
+
+def primary_provider(db: Session, tenant_id: UUID) -> Provider | None:
+    """Return the first provider for a tenant to drive the WhatsApp flow."""
+
+    stmt = (
+        select(Provider)
+        .where(Provider.tenant_id == tenant_id)
+        .order_by(Provider.full_name)
+        .limit(1)
+    )
+    return db.execute(stmt).scalars().first()
+
+
+def parse_service_choice(
+    user_input: str, options: Sequence[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Resolve the service based on numeric or textual input."""
+
+    normalized = user_input.strip().casefold()
+    if normalized.isdigit():
+        index = int(normalized) - 1
+        if 0 <= index < len(options):
+            return options[index]
+
+    for option in options:
+        if option["name"].casefold() == normalized:
+            return option
+        if option["id"].casefold() == normalized:
+            return option
+    return None
+
+
+def parse_date_choice(user_input: str) -> date | None:
+    """Parse a YYYY-MM-DD formatted date."""
+
+    try:
+        return datetime.strptime(user_input.strip(), "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def format_service_prompt(options: Sequence[dict[str, Any]]) -> str:
+    """Generate the text prompt listing services."""
+
+    if not options:
+        return "No momento não encontramos serviços disponíveis."
+
+    lines = [
+        "Perfeito! Escolha um serviço digitando o número correspondente:",
+    ]
+    for index, option in enumerate(options, start=1):
+        lines.append(
+            f"{index}. {option['name']} ({option['duration_min']} min)"
+        )
+    return "\n".join(lines)
+
+
+def format_slot_prompt(
+    *,
+    slots: Sequence[dict[str, Any]],
+    target_date: date,
+    tz: ZoneInfo,
+    service_name: str,
+) -> str:
+    """Generate a textual prompt listing available slots."""
+
+    if not slots:
+        return (
+            f"Não encontramos horários disponíveis para {service_name} em {target_date.isoformat()}."
+            "\nEnvie outra data no formato YYYY-MM-DD para tentar novamente."
+        )
+
+    lines = [
+        f"Horários disponíveis em {target_date.strftime('%d/%m/%Y')} para {service_name}:",
+    ]
+    for index, option in enumerate(slots, start=1):
+        start_local = datetime.fromisoformat(option["start_local"]).astimezone(tz)
+        lines.append(f"{index}. {start_local.strftime('%H:%M')}")
+    lines.append("Responda com o número ou horário desejado (HH:MM).")
+    return "\n".join(lines)
+
+
+def parse_slot_choice(
+    user_input: str, options: Sequence[dict[str, Any]], tz: ZoneInfo
+) -> dict[str, Any] | None:
+    """Select a slot based on numeric index or HH:MM time."""
+
+    normalized = user_input.strip()
+    if normalized.isdigit():
+        index = int(normalized) - 1
+        if 0 <= index < len(options):
+            return options[index]
+
+    try:
+        requested_time = datetime.strptime(normalized, "%H:%M").time()
+    except ValueError:
+        return None
+
+    for option in options:
+        start_local = datetime.fromisoformat(option["start_local"]).astimezone(tz)
+        if (
+            start_local.hour == requested_time.hour
+            and start_local.minute == requested_time.minute
+        ):
+            return option
+    return None
+
+
+def lock_slot_by_id(db: Session, slot_id: UUID) -> ScheduleSlot | None:
+    """Fetch a slot by identifier with row-level locking."""
+
+    stmt = select(ScheduleSlot).where(ScheduleSlot.id == slot_id).with_for_update()
+    return db.execute(stmt).scalars().first()
+
+
+def to_utc_from_tenant(dt_value: datetime, tenant: Tenant) -> datetime:
+    """Convert an arbitrary datetime to UTC assuming tenant timezone when naive."""
+
+    tz = tenant_timezone(tenant)
+    if dt_value.tzinfo is None:
+        localized = dt_value.replace(tzinfo=tz)
+    else:
+        localized = dt_value.astimezone(tz)
+    return localized.astimezone(timezone.utc)
 
 def normalize_evolution_message(
     raw_message: dict[str, Any]
@@ -314,18 +557,13 @@ def handle_inbound_message(
     text_body = extract_message_text(message)
     normalized = text_body.strip().lower()
 
+    state = get_state(phone) if phone else BotState.MENU_INICIAL
+    context = get_context(phone) if phone else {}
     response_details: dict[str, Any] | None = None
 
     if normalized == "agendar" and phone:
         set_state(phone, BotState.AGENDAR)
-        if session_active:
-            message_id, response_payload, request_payload = send_interactive_buttons(
-                to=phone,
-                body=MENU_PROMPT,
-                buttons=MENU_BUTTONS,
-            )
-            response_type = "interactive"
-        else:
+        if not session_active:
             message_id, response_payload, request_payload = send_template(
                 to=phone,
                 template_name="confirmacao_consulta",
@@ -335,45 +573,378 @@ def handle_inbound_message(
                     "em breve",
                 ],
             )
-            response_type = "template"
+            response_details = log_outbound_message(
+                db,
+                tenant_id=tenant_id,
+                phone=phone,
+                request_payload=request_payload,
+                response_payload=response_payload,
+                response_type="template",
+                session_active=session_active,
+                metadata_extra={"template": "confirmacao_consulta"},
+            )
+            return response_details
 
-        outbound_metadata = {
-            "direction": "outbound",
-            "wa_message_id": message_id,
-            "type": response_type,
-            "session_active": session_active,
-            "integration": "evolution_api",
-        }
-        if response_type == "interactive":
-            outbound_metadata["buttons"] = MENU_BUTTONS
+        provider = primary_provider(db, tenant_id)
+        services = service_options(db, tenant_id)
+        if not provider or not services:
+            message_text = (
+                "Estamos atualizando nossa agenda. Tente novamente em breve."
+            )
+            message_id, response_payload, request_payload = send_text(
+                to=phone, body=message_text
+            )
+            response_details = log_outbound_message(
+                db,
+                tenant_id=tenant_id,
+                phone=phone,
+                request_payload=request_payload,
+                response_payload=response_payload,
+                response_type="text",
+                session_active=session_active,
+                metadata_extra={"stage": "unavailable"},
+            )
+            clear_context(phone)
+            set_state(phone, BotState.MENU_INICIAL)
+            return response_details
 
-        payload_to_store = {
-            "request": request_payload,
-            "response": response_payload,
-        }
-        persist_message_log(
+        display_name = None
+        if metadata_extra:
+            display_name = metadata_extra.get("push_name")
+        patient = ensure_patient_profile(
             db,
             tenant_id=tenant_id,
-            channel="whatsapp",
-            recipient=phone,
-            payload=payload_to_store,
-            metadata=outbound_metadata,
-            status="sent",
-            sent_at=datetime.now(timezone.utc),
+            phone_number=phone,
+            display_name=display_name,
         )
-        record_last_interaction(phone, datetime.now(timezone.utc))
-
-        response_details = {
-            "message_id": message_id,
-            "type": response_type,
-            "session_active": session_active,
+        context = {
+            "stage": "service_selection",
+            "services": services,
+            "tenant_id": str(tenant_id),
+            "provider_id": str(provider.id),
+            "patient_id": str(patient.id),
         }
+        set_context(phone, context)
+
+        message_id, response_payload, request_payload = send_interactive_buttons(
+            to=phone,
+            body=MENU_PROMPT,
+            buttons=MENU_BUTTONS,
+        )
+        log_outbound_message(
+            db,
+            tenant_id=tenant_id,
+            phone=phone,
+            request_payload=request_payload,
+            response_payload=response_payload,
+            response_type="interactive",
+            session_active=session_active,
+            metadata_extra={"buttons": MENU_BUTTONS, "stage": "menu"},
+        )
+
+        prompt_text = format_service_prompt(services)
+        message_id, response_payload, request_payload = send_text(
+            to=phone, body=prompt_text
+        )
+        response_details = log_outbound_message(
+            db,
+            tenant_id=tenant_id,
+            phone=phone,
+            request_payload=request_payload,
+            response_payload=response_payload,
+            response_type="text",
+            session_active=session_active,
+            metadata_extra={"stage": "service_selection"},
+        )
+        response_details["stage"] = "service_selection"
+        return response_details
     elif normalized == "reagendar" and phone:
         set_state(phone, BotState.REMARCAR)
+        clear_context(phone)
     elif normalized in {"humano", "falar com atendente"} and phone:
         set_state(phone, BotState.HUMANO)
-    elif phone:
-        set_state(phone, BotState.MENU_INICIAL)
+        clear_context(phone)
+
+    if phone and state == BotState.AGENDAR and context:
+        stage = context.get("stage")
+        tenant_key = context.get("tenant_id")
+        tenant_uuid = UUID(tenant_key) if tenant_key else tenant_id
+        tenant = db.get(Tenant, tenant_uuid)
+        tz = tenant_timezone(tenant)
+
+        if stage == "service_selection":
+            options = context.get("services", [])
+            selection = parse_service_choice(text_body, options)
+            if not selection:
+                message_text = (
+                    "Não entendi a escolha. Responda com o número do serviço desejado."
+                )
+                message_id, response_payload, request_payload = send_text(
+                    to=phone, body=message_text
+                )
+                response_details = log_outbound_message(
+                    db,
+                    tenant_id=tenant_id,
+                    phone=phone,
+                    request_payload=request_payload,
+                    response_payload=response_payload,
+                    response_type="text",
+                    session_active=session_active,
+                    metadata_extra={"stage": "service_selection", "error": "invalid_choice"},
+                )
+                return response_details
+
+            context["service_id"] = selection["id"]
+            context["service_name"] = selection["name"]
+            context["stage"] = "date_selection"
+            set_context(phone, context)
+
+            message_text = (
+                f"Ótimo! Para {selection['name']}, informe a data desejada no formato YYYY-MM-DD."
+            )
+            message_id, response_payload, request_payload = send_text(
+                to=phone, body=message_text
+            )
+            response_details = log_outbound_message(
+                db,
+                tenant_id=tenant_id,
+                phone=phone,
+                request_payload=request_payload,
+                response_payload=response_payload,
+                response_type="text",
+                session_active=session_active,
+                metadata_extra={"stage": "date_selection"},
+            )
+            response_details["stage"] = "date_selection"
+            return response_details
+
+        if stage == "date_selection":
+            selected_date = parse_date_choice(text_body)
+            if not selected_date:
+                message_id, response_payload, request_payload = send_text(
+                    to=phone,
+                    body="Data inválida. Use o formato YYYY-MM-DD.",
+                )
+                response_details = log_outbound_message(
+                    db,
+                    tenant_id=tenant_id,
+                    phone=phone,
+                    request_payload=request_payload,
+                    response_payload=response_payload,
+                    response_type="text",
+                    session_active=session_active,
+                    metadata_extra={"stage": "date_selection", "error": "invalid_format"},
+                )
+                return response_details
+
+            provider_id = context.get("provider_id")
+            service_id = context.get("service_id")
+            provider = db.get(Provider, UUID(provider_id)) if provider_id else None
+            service = db.get(Service, UUID(service_id)) if service_id else None
+            if not provider or not service or not tenant:
+                message_id, response_payload, request_payload = send_text(
+                    to=phone,
+                    body="Não foi possível encontrar a agenda. Por favor, tente novamente mais tarde.",
+                )
+                response_details = log_outbound_message(
+                    db,
+                    tenant_id=tenant_id,
+                    phone=phone,
+                    request_payload=request_payload,
+                    response_payload=response_payload,
+                    response_type="text",
+                    session_active=session_active,
+                    metadata_extra={"stage": "date_selection", "error": "missing_entities"},
+                )
+                clear_context(phone)
+                set_state(phone, BotState.MENU_INICIAL)
+                return response_details
+
+            held_slots, slot_tz = offer_slots(
+                db,
+                tenant=tenant,
+                provider=provider,
+                service=service,
+                target_date=selected_date,
+            )
+            slot_options = [slot.as_dict(slot_tz) for slot in held_slots]
+            context["slot_options"] = slot_options
+            context["selected_date"] = selected_date.isoformat()
+            context["timezone"] = getattr(slot_tz, "key", str(slot_tz))
+            context["stage"] = "time_selection" if slot_options else "date_selection"
+            set_context(phone, context)
+
+            prompt = format_slot_prompt(
+                slots=slot_options,
+                target_date=selected_date,
+                tz=slot_tz,
+                service_name=service.name,
+            )
+            message_id, response_payload, request_payload = send_text(
+                to=phone, body=prompt
+            )
+            response_details = log_outbound_message(
+                db,
+                tenant_id=tenant_id,
+                phone=phone,
+                request_payload=request_payload,
+                response_payload=response_payload,
+                response_type="text",
+                session_active=session_active,
+                metadata_extra={
+                    "stage": context["stage"],
+                    "slot_count": len(slot_options),
+                },
+            )
+            response_details["stage"] = context["stage"]
+            return response_details
+
+        if stage == "time_selection":
+            tz_name = context.get("timezone") or getattr(tz, "key", str(tz))
+            try:
+                slot_tz = ZoneInfo(tz_name)
+            except Exception:  # pragma: no cover - fallback safety
+                slot_tz = tz
+
+            slot_options = context.get("slot_options", [])
+            if not slot_options:
+                context["stage"] = "date_selection"
+                set_context(phone, context)
+                message_id, response_payload, request_payload = send_text(
+                    to=phone,
+                    body="Os horários expiraram. Informe uma nova data para continuar.",
+                )
+                response_details = log_outbound_message(
+                    db,
+                    tenant_id=tenant_id,
+                    phone=phone,
+                    request_payload=request_payload,
+                    response_payload=response_payload,
+                    response_type="text",
+                    session_active=session_active,
+                    metadata_extra={"stage": "date_selection", "error": "slots_expired"},
+                )
+                return response_details
+
+            choice = parse_slot_choice(text_body, slot_options, slot_tz)
+            if not choice:
+                message_id, response_payload, request_payload = send_text(
+                    to=phone,
+                    body="Não entendi o horário selecionado. Escolha um dos horários listados.",
+                )
+                response_details = log_outbound_message(
+                    db,
+                    tenant_id=tenant_id,
+                    phone=phone,
+                    request_payload=request_payload,
+                    response_payload=response_payload,
+                    response_type="text",
+                    session_active=session_active,
+                    metadata_extra={"stage": "time_selection", "error": "invalid_slot"},
+                )
+                return response_details
+
+            provider = db.get(Provider, UUID(context.get("provider_id")))
+            service = db.get(Service, UUID(context.get("service_id")))
+            patient = db.get(Patient, UUID(context.get("patient_id")))
+            if not provider or not service or not patient or not tenant:
+                message_id, response_payload, request_payload = send_text(
+                    to=phone,
+                    body="Não foi possível concluir o agendamento. Tente novamente.",
+                )
+                response_details = log_outbound_message(
+                    db,
+                    tenant_id=tenant_id,
+                    phone=phone,
+                    request_payload=request_payload,
+                    response_payload=response_payload,
+                    response_type="text",
+                    session_active=session_active,
+                    metadata_extra={"stage": "time_selection", "error": "missing_entities"},
+                )
+                clear_context(phone)
+                set_state(phone, BotState.MENU_INICIAL)
+                return response_details
+
+            slot_id = UUID(choice["slot_id"])
+            slot = lock_slot_by_id(db, slot_id)
+            if not slot:
+                message_id, response_payload, request_payload = send_text(
+                    to=phone,
+                    body="O horário escolhido não está mais disponível. Envie uma nova data.",
+                )
+                context["stage"] = "date_selection"
+                set_context(phone, context)
+                response_details = log_outbound_message(
+                    db,
+                    tenant_id=tenant_id,
+                    phone=phone,
+                    request_payload=request_payload,
+                    response_payload=response_payload,
+                    response_type="text",
+                    session_active=session_active,
+                    metadata_extra={"stage": "date_selection", "error": "slot_missing"},
+                )
+                return response_details
+
+            try:
+                appointment = book_slot(
+                    db,
+                    tenant=tenant,
+                    provider=provider,
+                    patient=patient,
+                    service=service,
+                    slot=slot,
+                    origin=AppointmentOrigin.WHATSAPP,
+                )
+            except ValueError:
+                message_id, response_payload, request_payload = send_text(
+                    to=phone,
+                    body="O horário acabou de ser reservado por outra pessoa. Envie uma nova data.",
+                )
+                context["stage"] = "date_selection"
+                set_context(phone, context)
+                response_details = log_outbound_message(
+                    db,
+                    tenant_id=tenant_id,
+                    phone=phone,
+                    request_payload=request_payload,
+                    response_payload=response_payload,
+                    response_type="text",
+                    session_active=session_active,
+                    metadata_extra={"stage": "date_selection", "error": "slot_conflict"},
+                )
+                return response_details
+
+            confirmation_tz = slot_tz
+            start_local = ensure_utc(appointment.scheduled_start).astimezone(
+                confirmation_tz
+            )
+            message_text = (
+                f"Consulta confirmada para {start_local.strftime('%d/%m/%Y às %H:%M')} com {service.name}."
+            )
+            message_id, response_payload, request_payload = send_text(
+                to=phone, body=message_text
+            )
+            response_details = log_outbound_message(
+                db,
+                tenant_id=tenant_id,
+                phone=phone,
+                request_payload=request_payload,
+                response_payload=response_payload,
+                response_type="text",
+                session_active=session_active,
+                metadata_extra={
+                    "stage": "completed",
+                    "appointment_id": str(appointment.id),
+                },
+            )
+            response_details["appointment"] = serialize_appointment(
+                appointment, tz=confirmation_tz
+            )
+            clear_context(phone)
+            set_state(phone, BotState.MENU_INICIAL)
+            return response_details
 
     return response_details
 
@@ -466,28 +1037,82 @@ def whatsapp_webhook(
 
 @app.get("/api/v1/slots/search")
 def search_slots(
-    tenant_id: str,
+    provider_id: UUID,
+    service_id: UUID,
+    date: str,
     db: Session = Depends(get_db),
-) -> dict[str, list[dict[str, Any]]]:
-    """Return available slots for a given tenant (stub)."""
+) -> dict[str, Any]:
+    """Return available slots for a provider/service on a given date."""
 
-    # A real implementation would query the database using the SQLAlchemy session.
-    _ = db  # suppress unused variable warnings
+    provider = db.get(Provider, provider_id)
+    if not provider:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
+
+    service = db.get(Service, service_id)
+    if not service:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service not found")
+
+    if service.tenant_id != provider.tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provider and service belong to different tenants",
+        )
+
+    tenant = db.get(Tenant, provider.tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+    target_date = parse_date_choice(date)
+    if not target_date:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid date format. Use YYYY-MM-DD.",
+        )
+
+    held_slots, tz = offer_slots(
+        db,
+        tenant=tenant,
+        provider=provider,
+        service=service,
+        target_date=target_date,
+    )
+    serialized = [slot.as_dict(tz) for slot in held_slots]
+    for item in serialized:
+        item["duration_min"] = service.duration_min
+        item["price_cents"] = service.price_cents
+
+    tz_name = getattr(tz, "key", str(tz))
     return {
-        "tenant_id": tenant_id,
-        "results": [],
+        "provider_id": str(provider_id),
+        "service_id": str(service_id),
+        "date": target_date.isoformat(),
+        "timezone": tz_name,
+        "results": serialized,
     }
 
 
 @app.get("/api/v1/appointments")
 def list_appointments(
-    tenant_id: str,
+    tenant_id: UUID,
     db: Session = Depends(get_db),
-) -> dict[str, list[dict[str, Any]]]:
-    """List appointments for a tenant (stub)."""
+) -> dict[str, Any]:
+    """List appointments for a tenant."""
 
-    _ = db
-    return {"tenant_id": tenant_id, "appointments": []}
+    tenant = db.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+    tz = tenant_timezone(tenant)
+    stmt = (
+        select(Appointment)
+        .where(Appointment.tenant_id == tenant_id)
+        .order_by(Appointment.scheduled_start)
+    )
+    appointments = db.execute(stmt).scalars().all()
+    return {
+        "tenant_id": str(tenant_id),
+        "appointments": [serialize_appointment(appt, tz=tz) for appt in appointments],
+    }
 
 
 @app.post("/api/v1/appointments", status_code=status.HTTP_201_CREATED)
@@ -495,7 +1120,115 @@ def create_appointment(
     payload: AppointmentCreate,
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Create a new appointment (stub)."""
+    """Create a new appointment using a held slot."""
 
-    _ = db
-    return {"appointment_id": "stub", "data": payload.model_dump()}
+    provider = db.get(Provider, payload.provider_id)
+    if not provider:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
+
+    patient = db.get(Patient, payload.patient_id)
+    if not patient:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
+
+    service = db.get(Service, payload.service_id)
+    if not service:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service not found")
+
+    tenant = db.get(Tenant, provider.tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+    if service.tenant_id != provider.tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provider and service belong to different tenants",
+        )
+    if patient.tenant_id != provider.tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Patient is registered in another tenant",
+        )
+
+    start_utc = to_utc_from_tenant(payload.start_ts, tenant)
+
+    slot: ScheduleSlot | None = None
+    if payload.schedule_slot_id:
+        slot = lock_slot_by_id(db, payload.schedule_slot_id)
+        if not slot:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Schedule slot not found",
+            )
+        if slot.provider_id != provider.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Schedule slot belongs to another provider",
+            )
+    else:
+        slot = get_slot_by_start(db, provider_id=provider.id, start_ts=start_utc)
+        if not slot:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No slot available at the requested time",
+            )
+
+    try:
+        appointment = book_slot(
+            db,
+            tenant=tenant,
+            provider=provider,
+            patient=patient,
+            service=service,
+            slot=slot,
+            origin=payload.origin,
+            notes=payload.notes,
+        )
+    except ValueError as exc:  # slot no longer available
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+    tz = tenant_timezone(tenant)
+    return {"appointment": serialize_appointment(appointment, tz=tz)}
+
+
+@app.patch("/api/v1/appointments/{appointment_id}")
+def update_appointment_status(
+    appointment_id: UUID,
+    payload: AppointmentUpdate,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Update the status of an appointment."""
+
+    stmt = (
+        select(Appointment)
+        .where(Appointment.id == appointment_id)
+        .with_for_update()
+    )
+    appointment = db.execute(stmt).scalars().first()
+    if not appointment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Appointment not found",
+        )
+
+    appointment.status = payload.status
+    if payload.notes is not None:
+        appointment.notes = payload.notes
+
+    tenant = db.get(Tenant, appointment.tenant_id)
+
+    release_statuses = {
+        AppointmentStatus.CANCELLED,
+        AppointmentStatus.NO_SHOW,
+        AppointmentStatus.RESCHEDULED,
+    }
+    if payload.status in release_statuses and appointment.schedule_slot_id:
+        slot = db.get(ScheduleSlot, appointment.schedule_slot_id)
+        if slot:
+            slot.status = SlotStatus.FREE
+            slot.hold_expires_at = None
+
+    tz = tenant_timezone(tenant)
+    return {"appointment": serialize_appointment(appointment, tz=tz)}
