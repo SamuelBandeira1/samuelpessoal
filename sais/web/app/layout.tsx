@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { Providers } from "./providers";
 
 export const metadata: Metadata = {
   title: "SAIS - Saúde Inteligente",
@@ -13,7 +14,7 @@ export default function RootLayout({
   return (
     <html lang="pt-BR">
       <body className="min-h-screen bg-slate-50 text-slate-900">
-        {children}
+        <Providers>{children}</Providers>
       </body>
     </html>
   );
