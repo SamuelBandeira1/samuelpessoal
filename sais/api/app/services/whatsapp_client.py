@@ -1,10 +1,12 @@
-"""Thin wrapper around the WhatsApp Cloud API."""
+"""Thin wrapper around the Evolution WhatsApp API."""
 
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from typing import Iterable, Sequence
+from urllib.parse import quote
 
 import httpx
 
@@ -16,39 +18,45 @@ logger = logging.getLogger(__name__)
 _TIMEOUT = httpx.Timeout(connect=5.0, read=15.0, write=15.0, pool=5.0)
 
 
-def _build_messages_url() -> str:
-    base_url = settings.whatsapp_api_base_url.rstrip("/")
-    phone_number_id = settings.whatsapp_phone_number_id
-    if not phone_number_id:
-        raise RuntimeError("WHATSAPP_PHONE_NUMBER_ID is not configured")
-    return f"{base_url}/{phone_number_id}/messages"
+def _build_evolution_url(action: str) -> str:
+    base_url = settings.evolution_api_base_url.rstrip("/")
+    instance_name = settings.evolution_instance_name
+    if not instance_name:
+        raise RuntimeError("EVOLUTION_INSTANCE_NAME is not configured")
+    return f"{base_url}/message/{action}/{quote(instance_name)}"
 
 
-def _mock_send(payload: dict) -> tuple[str, dict]:
+def _mock_send(action: str, payload: dict) -> tuple[str, dict]:
     message_id = f"mocked-{uuid.uuid4()}"
-    logger.debug("Mocking WhatsApp send with payload: %s", payload)
+    logger.debug("Mocking Evolution send (%s) with payload: %s", action, payload)
+    phone = payload.get("number")
+    normalized_phone = re.sub(r"\D", "", phone or "")
     mock_response = {
-        "messages": [{"id": message_id}],
+        "key": {
+            "id": message_id,
+            "remoteJid": f"{normalized_phone or '00000000000'}@mock",
+        },
+        "messageType": action,
         "mocked": True,
         "payload": payload,
     }
-    if payload.get("type") == "template":
-        template_name = payload.get("template", {}).get("name", "")
+    if action == "sendTemplate":
+        template_name = payload.get("name", "")
         mock_response["template"] = TEMPLATE_MOCKS.get(template_name)
     return message_id, mock_response
 
 
-def _dispatch(payload: dict) -> tuple[str, dict]:
+def _dispatch(action: str, payload: dict) -> tuple[str, dict]:
     if settings.whatsapp_mock_mode:
-        return _mock_send(payload)
+        return _mock_send(action, payload)
 
-    token = settings.whatsapp_token
-    if not token:
-        raise RuntimeError("WHATSAPP_TOKEN is not configured")
+    api_key = settings.evolution_api_key
+    if not api_key:
+        raise RuntimeError("EVOLUTION_API_KEY is not configured")
 
-    url = _build_messages_url()
+    url = _build_evolution_url(action)
     headers = {
-        "Authorization": f"Bearer {token}",
+        "apikey": api_key,
         "Content-Type": "application/json",
     }
 
@@ -56,15 +64,15 @@ def _dispatch(payload: dict) -> tuple[str, dict]:
         response = client.post(url, headers=headers, json=payload)
     response.raise_for_status()
     data = response.json()
-    messages = data.get("messages", [])
-    if not messages:
-        raise RuntimeError("WhatsApp API response did not include message identifiers")
-
-    message_id = messages[0].get("id")
+    message_id = (
+        data.get("key", {}).get("id")
+        or data.get("id")
+        or data.get("message", {}).get("key", {}).get("id")
+    )
     if not message_id:
-        raise RuntimeError("WhatsApp API response returned an empty message id")
+        raise RuntimeError("Evolution API response did not include a message identifier")
 
-    logger.debug("WhatsApp API responded with %s", data)
+    logger.debug("Evolution API responded with %s", data)
     return message_id, data
 
 
@@ -88,16 +96,12 @@ def send_template(
         )
 
     payload = {
-        "messaging_product": "whatsapp",
-        "to": to,
-        "type": "template",
-        "template": {
-            "name": template_name,
-            "language": {"code": language_code},
-            "components": components,
-        },
+        "number": to,
+        "name": template_name,
+        "language": language_code,
+        "components": components,
     }
-    message_id, response = _dispatch(payload)
+    message_id, response = _dispatch("sendTemplate", payload)
     return message_id, response, payload
 
 
@@ -116,22 +120,15 @@ def send_interactive_buttons(
         action_buttons.append(
             {
                 "type": "reply",
-                "reply": {
-                    "id": f"option_{index}",
-                    "title": title,
-                },
+                "id": f"option_{index}",
+                "displayText": title,
             }
         )
 
     payload = {
-        "messaging_product": "whatsapp",
-        "to": to,
-        "type": "interactive",
-        "interactive": {
-            "type": "button",
-            "body": {"text": body},
-            "action": {"buttons": action_buttons},
-        },
+        "number": to,
+        "title": body,
+        "buttons": action_buttons,
     }
-    message_id, response = _dispatch(payload)
+    message_id, response = _dispatch("sendButtons", payload)
     return message_id, response, payload

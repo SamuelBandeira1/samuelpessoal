@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
@@ -123,6 +124,98 @@ def parse_timestamp(raw_timestamp: str | None) -> datetime:
         return datetime.now(timezone.utc)
 
 
+def jid_to_phone(jid: str | None) -> str | None:
+    """Extract the numeric portion of a WhatsApp JID."""
+
+    if not jid:
+        return None
+    phone = jid.split("@", 1)[0]
+    digits = re.sub(r"\D", "", phone)
+    return digits or None
+
+
+def normalize_evolution_message(
+    raw_message: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Convert Evolution webhook payloads into a Graph-like message structure."""
+
+    key = raw_message.get("key", {}) or {}
+    message_body = raw_message.get("message", {}) or {}
+    message_type = raw_message.get("messageType")
+    remote_jid = key.get("remoteJid") or ""
+    message_id = key.get("id") or raw_message.get("id")
+
+    timestamp = raw_message.get("messageTimestamp")
+    if timestamp is None:
+        normalized_timestamp = datetime.now(timezone.utc)
+    else:
+        try:
+            normalized_timestamp = datetime.fromtimestamp(
+                int(timestamp), tz=timezone.utc
+            )
+        except (TypeError, ValueError):
+            normalized_timestamp = datetime.now(timezone.utc)
+
+    normalized_message: dict[str, Any] = {
+        "id": message_id,
+        "from": jid_to_phone(remote_jid),
+        "timestamp": str(int(normalized_timestamp.timestamp())),
+        "type": "text",
+    }
+
+    if "conversation" in message_body:
+        normalized_message["type"] = "text"
+        normalized_message["text"] = {"body": message_body.get("conversation", "")}
+    elif "extendedTextMessage" in message_body:
+        text_body = message_body.get("extendedTextMessage", {}).get("text", "")
+        normalized_message["type"] = "text"
+        normalized_message["text"] = {"body": text_body}
+    elif "imageMessage" in message_body:
+        normalized_message["type"] = "image"
+        normalized_message["image"] = message_body.get("imageMessage", {})
+    elif "videoMessage" in message_body:
+        normalized_message["type"] = "video"
+        normalized_message["video"] = message_body.get("videoMessage", {})
+    elif "audioMessage" in message_body:
+        normalized_message["type"] = "audio"
+        normalized_message["audio"] = message_body.get("audioMessage", {})
+    elif "documentMessage" in message_body:
+        normalized_message["type"] = "document"
+        normalized_message["document"] = message_body.get("documentMessage", {})
+    elif "stickerMessage" in message_body:
+        normalized_message["type"] = "sticker"
+        normalized_message["sticker"] = message_body.get("stickerMessage", {})
+    elif "locationMessage" in message_body:
+        normalized_message["type"] = "location"
+        normalized_message["location"] = message_body.get("locationMessage", {})
+    elif "reactionMessage" in message_body:
+        normalized_message["type"] = "reaction"
+        normalized_message["reaction"] = message_body.get("reactionMessage", {})
+    elif "contactMessage" in message_body:
+        normalized_message["type"] = "contacts"
+        normalized_message["contacts"] = [
+            message_body.get("contactMessage", {})
+        ]
+    elif "contactsArrayMessage" in message_body:
+        normalized_message["type"] = "contacts"
+        normalized_message["contacts"] = message_body.get(
+            "contactsArrayMessage", {}
+        ).get("contacts", [])
+    else:
+        normalized_message["type"] = message_type or "unknown"
+
+    metadata_extra = {
+        "integration": "evolution_api",
+        "message_type": message_type,
+        "from_me": key.get("fromMe"),
+        "remote_jid": remote_jid,
+        "instance_id": raw_message.get("instanceId"),
+        "push_name": raw_message.get("pushName"),
+    }
+
+    return normalized_message, metadata_extra
+
+
 def extract_message_text(message: dict[str, Any]) -> str:
     """Return the human-readable text from a WhatsApp message payload."""
 
@@ -142,7 +235,12 @@ def extract_message_text(message: dict[str, Any]) -> str:
 def handle_status_update(db: Session, status_payload: dict[str, Any]) -> None:
     """Apply delivery status updates to the message log."""
 
-    message_id = status_payload.get("id")
+    message_id = (
+        status_payload.get("keyId")
+        or status_payload.get("id")
+        or status_payload.get("message_id")
+        or status_payload.get("messageId")
+    )
     if not message_id:
         return
 
@@ -154,8 +252,13 @@ def handle_status_update(db: Session, status_payload: dict[str, Any]) -> None:
         logger.debug("Received status for unknown message id %s", message_id)
         return
 
-    message_log.status = status_payload.get("status", message_log.status)
+    status_value = status_payload.get("status")
+    if isinstance(status_value, str):
+        message_log.status = status_value.lower()
     metadata = message_log.metadata or {}
+    if "keyId" in status_payload:
+        metadata.setdefault("integration", "evolution_api")
+        metadata["status_origin"] = "evolution_api"
     history = metadata.setdefault("status_history", [])
     history.append(status_payload)
     message_log.metadata = metadata
@@ -170,24 +273,32 @@ def handle_status_update(db: Session, status_payload: dict[str, Any]) -> None:
             logger.debug("Invalid status timestamp %s", timestamp)
 
 
-def handle_inbound_message(db: Session, message: dict[str, Any]) -> dict[str, Any] | None:
+def handle_inbound_message(
+    db: Session,
+    message: dict[str, Any],
+    *,
+    raw_payload: dict[str, Any] | None = None,
+    metadata_extra: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     """Process inbound WhatsApp messages, update state, and optionally reply."""
 
     phone = message.get("from")
     timestamp = parse_timestamp(message.get("timestamp"))
     tenant_id = ensure_default_tenant(db)
 
-    metadata = {
+    metadata: dict[str, Any] = {
         "direction": "inbound",
         "wa_message_id": message.get("id"),
         "type": message.get("type"),
     }
+    if metadata_extra:
+        metadata.update({k: v for k, v in metadata_extra.items() if v is not None})
     persist_message_log(
         db,
         tenant_id=tenant_id,
         channel="whatsapp",
         recipient=phone,
-        payload=message,
+        payload=raw_payload or message,
         metadata=metadata,
         status="received",
         sent_at=timestamp,
@@ -231,6 +342,7 @@ def handle_inbound_message(db: Session, message: dict[str, Any]) -> dict[str, An
             "wa_message_id": message_id,
             "type": response_type,
             "session_active": session_active,
+            "integration": "evolution_api",
         }
         if response_type == "interactive":
             outbound_metadata["buttons"] = MENU_BUTTONS
@@ -284,7 +396,7 @@ def whatsapp_webhook_verification(
     if (
         hub_mode == "subscribe"
         and hub_verify_token
-        and hub_verify_token == settings.whatsapp_verify_token
+        and hub_verify_token == settings.webhook_verify_token
     ):
         if not hub_challenge:
             raise HTTPException(
@@ -310,6 +422,34 @@ def whatsapp_webhook(
         )
 
     processed: list[dict[str, Any]] = []
+
+    event_name = payload.get("event")
+    if event_name:
+        event_key = str(event_name).upper()
+        event_data = payload.get("data")
+        items = event_data if isinstance(event_data, list) else [event_data]
+
+        if event_key == "MESSAGES_UPSERT":
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                normalized, extra_metadata = normalize_evolution_message(item)
+                result = handle_inbound_message(
+                    db,
+                    normalized,
+                    raw_payload=item,
+                    metadata_extra=extra_metadata,
+                )
+                if result:
+                    processed.append(result)
+        elif event_key in {"MESSAGES_UPDATE"}:
+            for status_update in items:
+                if isinstance(status_update, dict):
+                    handle_status_update(db, status_update)
+        else:
+            logger.debug("Unhandled Evolution webhook event: %s", event_name)
+
+        return {"status": "ok", "processed": processed, "event": event_name}
 
     for entry in payload.get("entry", []):
         for change in entry.get("changes", []):

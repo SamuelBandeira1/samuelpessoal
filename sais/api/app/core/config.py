@@ -13,10 +13,10 @@ class Settings(BaseSettings):
     )
     redis_url: str = "redis://redis:6379/0"
     timezone: str = "America/Fortaleza"
-    whatsapp_token: str = ""
-    whatsapp_phone_number_id: str = ""
-    whatsapp_verify_token: str = ""
-    whatsapp_api_base_url: str = "https://graph.facebook.com/v18.0"
+    evolution_api_base_url: str = "http://localhost:8080"
+    evolution_instance_name: str = ""
+    evolution_api_key: str = ""
+    webhook_verify_token: str = ""
     whatsapp_mock_mode: bool = False
     whatsapp_default_tenant_id: UUID | None = None
     whatsapp_default_tenant_name: str = "Default WhatsApp Tenant"
