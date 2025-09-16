@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     )
     redis_url: str = "redis://redis:6379/0"
     timezone: str = "America/Fortaleza"
+    cors_origins: list[str] = ["http://localhost:3000"]
+    rate_limit_requests: int = 120
+    rate_limit_window_seconds: int = 60
     evolution_api_base_url: str = "http://localhost:8080"
     evolution_instance_name: str = ""
     evolution_api_key: str = ""

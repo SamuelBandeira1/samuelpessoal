@@ -26,6 +26,6 @@ class MessageLog(Base, TimestampMixin):
     channel: Mapped[str] = mapped_column(String(32), nullable=False)
     recipient: Mapped[str | None] = mapped_column(String(255), nullable=True)
     payload: Mapped[str | None] = mapped_column(Text, nullable=True)
-    metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="pending")
     sent_at: Mapped[DateTime | None] = mapped_column(DateTime, nullable=True)

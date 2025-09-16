@@ -1,18 +1,24 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import time
+import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Sequence
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from fastapi import Depends, FastAPI, HTTPException, Query, status
-from fastapi.responses import PlainTextResponse
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.core.config import settings
 from app.db.session import get_db
@@ -49,6 +55,16 @@ from app.services.scheduling import (
     serialize_appointment,
     tenant_timezone,
 )
+from app.logging_utils import (
+    configure_logging,
+    get_current_tenant,
+    get_request_id,
+    set_tenant_context,
+    _request_id_ctx_var,
+    _tenant_id_ctx_var,
+)
+
+configure_logging()
 
 app = FastAPI(title=settings.app_name, version="0.1.0")
 
@@ -57,6 +73,157 @@ logger = logging.getLogger(__name__)
 WHATSAPP_SESSION_WINDOW = timedelta(hours=24)
 MENU_PROMPT = "Como podemos ajudar? Escolha uma opção para continuar:"
 MENU_BUTTONS = ["Agendar", "Reagendar", "Falar com atendente"]
+
+REQUEST_COUNTER = Counter(
+    "sais_api_requests_total",
+    "Total number of processed HTTP requests.",
+    ["method", "path", "status", "tenant"],
+)
+REQUEST_LATENCY = Histogram(
+    "sais_api_request_duration_seconds",
+    "HTTP request latency in seconds.",
+    ["method", "path"],
+)
+
+
+class SimpleRateLimiter:
+    """In-memory rate limiter keyed by IP and tenant."""
+
+    def __init__(self, limit: int, window_seconds: int) -> None:
+        self.limit = max(1, limit)
+        self.window_seconds = max(1, window_seconds)
+        self._entries: dict[str, tuple[int, float]] = {}
+        self._lock = asyncio.Lock()
+
+    async def allow(self, key: str) -> bool:
+        now = time.monotonic()
+        async with self._lock:
+            count, window_start = self._entries.get(key, (0, now))
+            if now - window_start >= self.window_seconds:
+                self._entries[key] = (1, now)
+                return True
+            if count >= self.limit:
+                return False
+            self._entries[key] = (count + 1, window_start)
+            return True
+
+
+class RequestContextMiddleware(BaseHTTPMiddleware):
+    """Populate request and tenant context for logging."""
+
+    async def dispatch(self, request: Request, call_next):  # type: ignore[override]
+        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        tenant_hint = request.headers.get("X-Tenant-ID")
+
+        request.state.request_id = request_id
+        request_id_token = _request_id_ctx_var.set(request_id)
+        tenant_token = _tenant_id_ctx_var.set(tenant_hint)
+
+        try:
+            response = await call_next(request)
+        finally:
+            _request_id_ctx_var.reset(request_id_token)
+            _tenant_id_ctx_var.reset(tenant_token)
+
+        response.headers["X-Request-ID"] = request_id
+        return response
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Apply a coarse rate limit per IP and tenant."""
+
+    def __init__(self, app: FastAPI, limiter: SimpleRateLimiter) -> None:  # type: ignore[override]
+        super().__init__(app)
+        self.limiter = limiter
+
+    async def dispatch(self, request: Request, call_next):  # type: ignore[override]
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
+        client_host = request.client.host if request.client else "unknown"
+        tenant_key = _tenant_id_ctx_var.get() or request.headers.get("X-Tenant-ID")
+        tenant_value = tenant_key or "anonymous"
+        rate_key = f"{client_host}:{tenant_value}"
+
+        allowed = await self.limiter.allow(rate_key)
+        if not allowed:
+            logger.warning(
+                "rate limit exceeded",
+                extra={"client_ip": client_host, "tenant": tenant_value},
+            )
+            return JSONResponse(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                content={"detail": "Rate limit exceeded"},
+            )
+
+        return await call_next(request)
+
+
+class AccessLogMiddleware(BaseHTTPMiddleware):
+    """Emit structured access logs and feed metrics."""
+
+    async def dispatch(self, request: Request, call_next):  # type: ignore[override]
+        start_time = time.perf_counter()
+        path = request.scope.get("root_path", "") + request.scope.get("path", request.url.path)
+        method = request.method
+
+        try:
+            response = await call_next(request)
+        except Exception:
+            elapsed = time.perf_counter() - start_time
+            tenant_label = get_current_tenant()
+            REQUEST_COUNTER.labels(method=method, path=path, status="500", tenant=tenant_label).inc()
+            REQUEST_LATENCY.labels(method=method, path=path).observe(elapsed)
+            logger.exception(
+                "request failed",
+                extra={
+                    "method": method,
+                    "path": path,
+                    "duration_ms": round(elapsed * 1000, 2),
+                },
+            )
+            raise
+
+        elapsed = time.perf_counter() - start_time
+        status_code = response.status_code
+        tenant_label = get_current_tenant()
+
+        REQUEST_COUNTER.labels(
+            method=method,
+            path=path,
+            status=str(status_code),
+            tenant=tenant_label,
+        ).inc()
+        REQUEST_LATENCY.labels(method=method, path=path).observe(elapsed)
+
+        logger.info(
+            "request completed",
+            extra={
+                "method": method,
+                "path": path,
+                "status_code": status_code,
+                "duration_ms": round(elapsed * 1000, 2),
+            },
+        )
+
+        return response
+
+
+rate_limiter = SimpleRateLimiter(
+    settings.rate_limit_requests, settings.rate_limit_window_seconds
+)
+
+
+app.add_middleware(RequestContextMiddleware)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.add_middleware(RateLimitMiddleware, limiter=rate_limiter)
+app.add_middleware(AccessLogMiddleware)
 
 
 class AppointmentCreate(BaseModel):
@@ -81,6 +248,7 @@ def ensure_default_tenant(db: Session) -> UUID:
     if tenant_id:
         tenant = db.get(Tenant, tenant_id)
         if tenant:
+            set_tenant_context(tenant.id)
             return tenant.id
         tenant = Tenant(
             id=tenant_id,
@@ -90,10 +258,12 @@ def ensure_default_tenant(db: Session) -> UUID:
         db.add(tenant)
         db.flush()
         logger.debug("Created default tenant %s for WhatsApp logs", tenant_id)
+        set_tenant_context(tenant.id)
         return tenant.id
 
     tenant = db.execute(select(Tenant).limit(1)).scalar_one_or_none()
     if tenant:
+        set_tenant_context(tenant.id)
         return tenant.id
 
     placeholder = Tenant(
@@ -105,6 +275,7 @@ def ensure_default_tenant(db: Session) -> UUID:
     logger.debug(
         "Created placeholder tenant %s for WhatsApp logs", placeholder.id
     )
+    set_tenant_context(placeholder.id)
     return placeholder.id
 
 
@@ -121,6 +292,8 @@ def persist_message_log(
 ) -> MessageLog:
     """Persist a record in the message log table."""
 
+    set_tenant_context(tenant_id)
+
     payload_value = (
         payload
         if isinstance(payload, str)
@@ -132,7 +305,7 @@ def persist_message_log(
         channel=channel,
         recipient=recipient,
         payload=payload_value,
-        metadata=metadata,
+        metadata_json=metadata,
         status=status,
         sent_at=sent_at,
     )
@@ -153,6 +326,8 @@ def log_outbound_message(
     metadata_extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Persist an outbound message in the log and return response metadata."""
+
+    set_tenant_context(tenant_id)
 
     message_id = None
     if isinstance(response_payload, dict):
@@ -488,7 +663,7 @@ def handle_status_update(db: Session, status_payload: dict[str, Any]) -> None:
         return
 
     stmt = select(MessageLog).where(
-        MessageLog.metadata["wa_message_id"].astext == message_id
+        MessageLog.metadata_json["wa_message_id"].astext == message_id
     )
     message_log = db.execute(stmt).scalars().first()
     if not message_log:
@@ -498,13 +673,13 @@ def handle_status_update(db: Session, status_payload: dict[str, Any]) -> None:
     status_value = status_payload.get("status")
     if isinstance(status_value, str):
         message_log.status = status_value.lower()
-    metadata = message_log.metadata or {}
+    metadata = message_log.metadata_json or {}
     if "keyId" in status_payload:
         metadata.setdefault("integration", "evolution_api")
         metadata["status_origin"] = "evolution_api"
     history = metadata.setdefault("status_history", [])
     history.append(status_payload)
-    message_log.metadata = metadata
+    message_log.metadata_json = metadata
 
     timestamp = status_payload.get("timestamp")
     if timestamp:
@@ -949,6 +1124,13 @@ def handle_inbound_message(
     return response_details
 
 
+@app.get("/metrics")
+def metrics() -> Response:
+    """Expose Prometheus metrics for scraping."""
+
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     """Health check endpoint used by infrastructure probes."""
@@ -1048,6 +1230,8 @@ def search_slots(
     if not provider:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
 
+    set_tenant_context(provider.tenant_id)
+
     service = db.get(Service, service_id)
     if not service:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service not found")
@@ -1061,6 +1245,8 @@ def search_slots(
     tenant = db.get(Tenant, provider.tenant_id)
     if not tenant:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+    set_tenant_context(tenant.id)
 
     target_date = parse_date_choice(date)
     if not target_date:
@@ -1102,6 +1288,8 @@ def list_appointments(
     if not tenant:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
 
+    set_tenant_context(tenant.id)
+
     tz = tenant_timezone(tenant)
     stmt = (
         select(Appointment)
@@ -1137,6 +1325,8 @@ def create_appointment(
     tenant = db.get(Tenant, provider.tenant_id)
     if not tenant:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+    set_tenant_context(tenant.id)
 
     if service.tenant_id != provider.tenant_id:
         raise HTTPException(
@@ -1218,6 +1408,10 @@ def update_appointment_status(
         appointment.notes = payload.notes
 
     tenant = db.get(Tenant, appointment.tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+    set_tenant_context(tenant.id)
 
     release_statuses = {
         AppointmentStatus.CANCELLED,

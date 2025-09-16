@@ -24,4 +24,4 @@ class AuditLog(Base, TimestampMixin):
     action: Mapped[str] = mapped_column(String(255), nullable=False)
     resource: Mapped[str | None] = mapped_column(String(255), nullable=True)
     occurred_at: Mapped[DateTime] = mapped_column(DateTime, nullable=False)
-    metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
