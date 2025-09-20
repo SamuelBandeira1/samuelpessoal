@@ -63,7 +63,6 @@ from dateutil.relativedelta import relativedelta
 import warnings
 warnings.filterwarnings('ignore')
 
-
 # =============================================================================
 # 2. CONSTANTES GERAIS E CONFIGURAÇÕES
 # =============================================================================
@@ -73,7 +72,6 @@ def _sanitize_filename(s: str) -> str:
     s = str(s)
     s = s.strip().replace(' ', '_')
     return re.sub(r'[:*?"<>|/\\]+', '_', s)
-
 
 FILE_PATH = Path(r"C:\\Users\\samuel.bandeira\\Desktop\\Base_Estatistica_TCC.xlsx")
 OUTPUT_PATH = Path(r"C:\\Users\\samuel.bandeira\\Desktop\\resultado_forecast_6m.xlsx")
@@ -114,7 +112,6 @@ EXCEL_MAX_ROWS = 1_048_576
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-
 # =============================================================================
 # 3. FUNÇÕES UTILITÁRIAS
 # =============================================================================
@@ -137,7 +134,6 @@ def wape(y_true, y_pred, sample_weight=None) -> float:
         den = float(np.sum(yt[mask]))
     return float(num / den * 100.0) if den > 0 else float("inf")
 
-
 def mape(y_true: Union[List[float], np.ndarray], y_pred: Union[List[float], np.ndarray]) -> float:
     """Calcula o erro percentual absoluto médio (MAPE)."""
     y_true = np.array(y_true)
@@ -147,7 +143,6 @@ def mape(y_true: Union[List[float], np.ndarray], y_pred: Union[List[float], np.n
         return float('inf')
     return float(np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100)
 
-
 def split_train_test(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Divide o DataFrame em conjuntos de treino e teste a partir do corte temporal."""
     cut = pd.to_datetime(CUTOFF)
@@ -155,14 +150,12 @@ def split_train_test(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     test  = df[df['Data'] >  cut].copy()
     return train, test
 
-
 def safe_inverse_boxcox(value: float, lam: float) -> float:
     """Aplica inversa de Box-Cox de forma segura."""
     try:
         return float(inv_boxcox(value, lam))
     except Exception:
         return float(value)
-
 
 # =============================================================================
 # 4. CLASSE PRINCIPAL DO PIPELINE
@@ -1426,7 +1419,6 @@ class Forecaster:
         logger.info(f"Gráficos salvos em {CHARTS_DIR} e {CHARTS_LINES_DIR}")
         logger.info("=== PIPELINE FINALIZADO ===")
 
-
 # =============================================================================
 # 5. PONTO DE ENTRADA
 # =============================================================================
@@ -1439,7 +1431,6 @@ def main():
     except Exception as e:
         logger.exception(f"Erro no pipeline: {e}")
         raise
-
 
 if __name__ == '__main__':
     main()
