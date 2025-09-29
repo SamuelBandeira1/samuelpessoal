@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Power BI para Gestão — Vendas | Monte dashboards úteis em 7 dias</title>
+  <meta name="description" content="Curso Power BI para Gestão — Vendas. Templates, PBIX, DAX comentadas e suporte para montar um dashboard que seu gestor entende em 7 dias." />
+  <meta property="og:title" content="Power BI para Gestão — Vendas" />
+  <meta property="og:description" content="Método direto com templates, PBIX e DAX comentadas para entregar dashboards que mudam decisões." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://seusite.com/powerbi-gestao-vendas" />
+  <meta name="theme-color" content="#0b0f14" />
+  <link rel="stylesheet" href="assets/css/styles.css" />
+  <script src="assets/js/main.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#conteudo-principal">Pular para o conteúdo principal</a>
+  <!-- HERO -->
+  <header class="hero" role="banner">
+    <div class="container hero__inner" aria-labelledby="hero-heading">
+      <div class="hero__content" data-animate>
+        <p class="eyebrow">Power BI para Gestão — Vendas</p>
+        <h1 id="hero-heading">Monte um dashboard que seu gestor entende em 7 dias — mesmo começando do zero.</h1>
+        <p class="hero__sub">Método direto, com templates + .PBIX + DAX comentadas. Sem firula, só o que muda decisão.</p>
+        <div class="hero__cta-group">
+          <a class="button button--primary" data-cta="checkout" href="{{KIWIFY_CHECKOUT_URL}}">Quero meu 1º dashboard útil</a>
+          <p class="hero__note" role="note">Preço atual R$97 • Garantia de 7 dias</p>
+        </div>
+      </div>
+      <div class="hero__visual" aria-hidden="true" data-animate>
+        <div class="hero__badge">
+          <span class="hero__badge-label">Entrega rápida</span>
+          <span class="hero__badge-value">7 dias</span>
+        </div>
+        <div class="hero__glow"></div>
+      </div>
+    </div>
+  </header>
+  <main id="conteudo-principal">
+    <!-- BENEFÍCIOS -->
+    <section class="section" aria-labelledby="section-beneficios">
+      <div class="container" data-animate>
+        <div class="section__header">
+          <h2 id="section-beneficios">Você leva, para quem é e garantia</h2>
+          <p class="section__subtitle">Tudo o que você precisa para colocar o primeiro dashboard na frente do gestor com segurança.</p>
+        </div>
+        <div class="grid grid--benefits">
+          <article class="card" aria-labelledby="card-beneficios-title">
+            <h3 id="card-beneficios-title">Você leva</h3>
+            <ul class="list">
+              <li>10 DAX prontos (Volume, Meta, Atingimento, MTD, YTD, YoY, Var% YoY)</li>
+              <li>Template .PBIX profissional + tema de layout</li>
+              <li>Checklist de sanidade antes de publicar</li>
+              <li>E-books + quizzes por módulo</li>
+              <li>Suporte por e-mail por 30 dias</li>
+            </ul>
+          </article>
+          <article class="card" aria-labelledby="card-publico-title">
+            <h3 id="card-publico-title">Para quem é / Não é</h3>
+            <p class="card__text"><strong>Para quem:</strong> precisa tirar o 1º dashboard do papel e apresentar algo que o gestor entenda em 10 segundos.</p>
+            <p class="card__text"><strong>Não é para:</strong> quem busca efeitos visuais sem foco em decisão ou já domina DAX avançado.</p>
+          </article>
+          <article class="card card--success" aria-labelledby="card-garantia-title">
+            <h3 id="card-garantia-title">Garantia</h3>
+            <p class="card__text"><strong>Garantia incondicional de 7 dias.</strong> Se o curso não te ajudar a montar um dashboard útil, devolvo 100%. Sem letra miúda.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+    <!-- ANTES/DEPOIS -->
+    <section class="section" aria-labelledby="section-antes-depois">
+      <div class="container" data-animate>
+        <div class="section__header">
+          <h2 id="section-antes-depois">Antes → Depois</h2>
+          <p class="section__subtitle">Substitua pelos seus prints reais (dados fictícios/anonimizados). Explique o que mudou e por quê.</p>
+        </div>
+        <div class="gallery">
+          <figure class="gallery__item">
+            <img src="assets/img/img_antes.svg" width="960" height="540" alt="Antes — Exemplo fictício de dashboard confuso" loading="lazy" />
+            <figcaption>Antes — Exemplo fictício</figcaption>
+          </figure>
+          <figure class="gallery__item">
+            <img src="assets/img/img_depois1.svg" width="960" height="540" alt="Depois — Gestor decide em 10 segundos" loading="lazy" />
+            <figcaption>Depois — Gestor decide em 10s</figcaption>
+          </figure>
+          <figure class="gallery__item">
+            <img src="assets/img/img_depois2.svg" width="960" height="540" alt="Depois — KPIs com tendência e foco" loading="lazy" />
+            <figcaption>Depois — KPIs + Tendência + Foco</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+    <!-- PROGRAMA -->
+    <section class="section" aria-labelledby="section-programa">
+      <div class="container" data-animate>
+        <div class="grid grid--program">
+          <div>
+            <h2 id="section-programa">Programa (7 aulas)</h2>
+            <ol class="list list--ordered">
+              <li>Módulo 0 — Boas-vindas</li>
+              <li>Módulo 1 — Conexão com Dados (CSV)</li>
+              <li>Módulo 2 — Tratamento de Dados (Power Query)</li>
+              <li>Módulo 3 — Colunas Personalizadas + Medidas DAX</li>
+              <li>Módulo 4 — DAX aplicado (contexto, % total, mês anterior…)</li>
+              <li>Módulo 5 — Visuais e interações (eixos, slicers, acessibilidade)</li>
+              <li>Módulo 6 — Layout + publicação (background, parâmetros, UX)</li>
+            </ol>
+          </div>
+          <div>
+            <h2 id="section-stack">Stack e entregas</h2>
+            <p class="card__text">Power BI Desktop, .PBIX final, e-books, quizzes, checklist de sanidade, templates de layout</p>
+            <p class="tags" aria-label="Stack visual">Power Query • DAX • Design de Dashboard • Publicação</p>
+          </div>
+        </div>
+      </div>
+    </section>
+    <!-- FAQ -->
+    <section class="section" aria-labelledby="section-faq">
+      <div class="container" data-animate>
+        <div class="section__header">
+          <h2 id="section-faq">Perguntas frequentes</h2>
+        </div>
+        <div class="faq">
+          <details>
+            <summary>Preciso saber DAX?</summary>
+            <p>Não. Você aprende o necessário para montar seu 1º dashboard útil.</p>
+          </details>
+          <details>
+            <summary>Tenho acesso vitalício?</summary>
+            <p>Sim. E atualizações futuras deste módulo estão inclusas.</p>
+          </details>
+          <details>
+            <summary>Posso pedir reembolso?</summary>
+            <p>Sim. Dentro de 7 dias, se não te ajudar a montar um dashboard útil.</p>
+          </details>
+          <details>
+            <summary>Tem suporte?</summary>
+            <p>Suporte por e-mail por 30 dias após a compra.</p>
+          </details>
+        </div>
+      </div>
+    </section>
+    <!-- CTA FINAL -->
+    <section class="section section--cta" aria-labelledby="section-cta-final">
+      <div class="container section--cta__inner" data-animate>
+        <h2 id="section-cta-final">Pronto para entregar seu 1º dashboard útil?</h2>
+        <p class="section__subtitle">Liberte-se dos relatórios decorativos. Foque em decisões, com suporte e templates.</p>
+        <a class="button button--primary" data-cta="checkout" href="{{KIWIFY_CHECKOUT_URL}}">Quero meu 1º dashboard útil</a>
+        <p class="hero__note" role="note">Preço R$97 • Garantia 7 dias</p>
+      </div>
+    </section>
+  </main>
+  <!-- FOOTER -->
+  <footer class="footer" role="contentinfo">
+    <div class="container">
+      <p>© <span id="js-current-year"></span> Facilita Treinamentos · suporte: <a href="mailto:seu-email@dominio.com">seu-email@dominio.com</a></p>
+    </div>
+  </footer>
+</body>
+</html>

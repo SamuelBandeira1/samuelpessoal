@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 540" role="img" aria-labelledby="title desc">
+  <title id="title">Placeholder Antes — Exemplo fictício</title>
+  <desc id="desc">Layout simplificado representando um dashboard antes da otimização</desc>
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1f2937" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+  </defs>
+  <rect width="960" height="540" rx="24" fill="url(#bg)" />
+  <g fill="#f87171">
+    <rect x="72" y="96" width="240" height="64" rx="12" opacity="0.6" />
+    <rect x="72" y="184" width="384" height="40" rx="10" opacity="0.45" />
+    <rect x="72" y="240" width="512" height="40" rx="10" opacity="0.3" />
+    <rect x="72" y="296" width="432" height="40" rx="10" opacity="0.3" />
+    <rect x="72" y="352" width="360" height="40" rx="10" opacity="0.25" />
+  </g>
+  <g fill="#94a3b8">
+    <rect x="528" y="112" width="360" height="152" rx="18" opacity="0.8" />
+    <rect x="528" y="288" width="360" height="56" rx="14" opacity="0.5" />
+    <rect x="528" y="360" width="360" height="96" rx="18" opacity="0.4" />
+  </g>
+  <text x="80" y="460" fill="#f8fafc" font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="36" font-weight="600">Antes — Exemplo fictício</text>
+</svg>

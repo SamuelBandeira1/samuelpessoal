@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 540" role="img" aria-labelledby="title desc">
+  <title id="title">Placeholder Depois — Gestor decide em 10 segundos</title>
+  <desc id="desc">Visual limpo destacando indicadores principais para decisão rápida</desc>
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#1e293b" />
+    </linearGradient>
+  </defs>
+  <rect width="960" height="540" rx="24" fill="url(#bg)" />
+  <g fill="#facc15">
+    <rect x="72" y="96" width="248" height="116" rx="16" opacity="0.9" />
+    <rect x="344" y="96" width="248" height="116" rx="16" opacity="0.75" />
+    <rect x="616" y="96" width="248" height="116" rx="16" opacity="0.6" />
+  </g>
+  <g fill="none" stroke="#38bdf8" stroke-width="6" stroke-linecap="round">
+    <path d="M120 280 Q240 240 360 300 T600 280 T840 340" opacity="0.8" />
+    <path d="M120 340 Q260 360 400 320 T640 360 T840 320" opacity="0.35" />
+  </g>
+  <g fill="#cbd5f5">
+    <rect x="72" y="376" width="816" height="72" rx="20" opacity="0.65" />
+  </g>
+  <text x="80" y="470" fill="#f8fafc" font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="34" font-weight="600">Depois — Gestor decide em 10s</text>
+</svg>
