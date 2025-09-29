@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" role="img" aria-labelledby="profileTitle profileDesc">
+  <title id="profileTitle">Profile placeholder</title>
+  <desc id="profileDesc">Circular gradient avatar with initials</desc>
+  <defs>
+    <radialGradient id="profileGradient" cx="50%" cy="45%" r="70%">
+      <stop offset="0%" stop-color="#ffda8f" />
+      <stop offset="100%" stop-color="#ff7a7a" />
+    </radialGradient>
+  </defs>
+  <rect width="400" height="400" rx="48" fill="#f6f6f9" />
+  <circle cx="200" cy="180" r="120" fill="url(#profileGradient)" />
+  <text x="50%" y="195" text-anchor="middle" font-family="'Segoe UI', Arial, sans-serif" font-size="96" font-weight="700" fill="#ffffff">AB</text>
+  <text x="50%" y="310" text-anchor="middle" font-family="'Segoe UI', Arial, sans-serif" font-size="28" fill="#5a5f7a">Profile Image</text>
+</svg>

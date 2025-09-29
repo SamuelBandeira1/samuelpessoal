@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 400" role="img" aria-labelledby="heroTitle heroDesc">
+  <title id="heroTitle">Hero placeholder</title>
+  <desc id="heroDesc">Gradient background with centered title text</desc>
+  <defs>
+    <linearGradient id="heroGradient" x1="0%" x2="100%" y1="0%" y2="0%">
+      <stop offset="0%" stop-color="#2c61f0" />
+      <stop offset="100%" stop-color="#7d4fff" />
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="400" fill="url(#heroGradient)" rx="24" />
+  <text x="50%" y="52%" text-anchor="middle" font-family="'Segoe UI', Arial, sans-serif" font-size="64" font-weight="600" fill="#ffffff" letter-spacing="4">Hero Placeholder</text>
+  <text x="50%" y="67%" text-anchor="middle" font-family="'Segoe UI', Arial, sans-serif" font-size="24" fill="#f2f4ff">Replace with a hero image</text>
+</svg>

@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Samuel Pessoal</title>
+    <link rel="preload" href="assets/img/hero-placeholder.svg" as="image" type="image/svg+xml" />
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: 'Segoe UI', Roboto, Arial, sans-serif;
+        line-height: 1.5;
+        background-color: #f6f8fb;
+        color: #202336;
+      }
+      body {
+        margin: 0;
+      }
+      header {
+        padding: 6rem 1.5rem 3rem;
+        max-width: 960px;
+        margin: 0 auto;
+        text-align: center;
+      }
+      header img {
+        display: block;
+        width: min(100%, 960px);
+        height: auto;
+        margin: 0 auto 2.5rem;
+      }
+      main {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 0 1.5rem 4rem;
+        display: grid;
+        gap: 3rem;
+      }
+      .profile {
+        display: grid;
+        grid-template-columns: minmax(180px, 240px) 1fr;
+        gap: 2rem;
+        align-items: center;
+      }
+      .profile img {
+        width: 100%;
+        height: auto;
+      }
+      .projects {
+        display: grid;
+        gap: 2rem;
+      }
+      .projects img {
+        width: 100%;
+        height: auto;
+        border-radius: 1.5rem;
+        box-shadow: 0 12px 32px rgba(24, 36, 78, 0.18);
+      }
+      footer {
+        text-align: center;
+        padding: 3rem 1.5rem;
+        color: #5a5f7a;
+      }
+      @media (max-width: 720px) {
+        header {
+          padding-top: 3rem;
+        }
+        .profile {
+          grid-template-columns: 1fr;
+          text-align: center;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <img
+        src="assets/img/hero-placeholder.svg"
+        width="1200"
+        height="400"
+        alt="Plano de fundo gradiente com texto indicando onde a imagem principal deve ser trocada"
+      />
+      <h1>Olá, eu sou Samuel</h1>
+      <p>Este site pessoal está em construção. Substitua as imagens abaixo pelos seus próprios materiais visuais.</p>
+    </header>
+    <main>
+      <section class="profile">
+        <img
+          src="assets/img/profile-placeholder.svg"
+          width="400"
+          height="400"
+          alt="Avatar ilustrativo com fundo gradiente e as iniciais AB"
+        />
+        <div>
+          <h2>Sobre mim</h2>
+          <p>
+            Use esta seção para apresentar um resumo da sua trajetória, especialidades e objetivos. Enquanto isso, a imagem ao lado serve
+            apenas como lembrete visual e pode ser substituída por uma foto profissional.
+          </p>
+        </div>
+      </section>
+      <section class="projects">
+        <h2>Projetos em destaque</h2>
+        <img
+          src="assets/img/project-placeholder.svg"
+          width="640"
+          height="400"
+          alt="Miniatura abstrata com grade e texto indicando a troca pela imagem do projeto"
+        />
+        <p>
+          Troque este arquivo vetorial por um print do seu projeto ou uma composição que represente o trabalho. Como o formato é SVG, você pode
+          exportar de ferramentas vetoriais ou simplesmente substituir a referência pelo seu próprio arquivo.
+        </p>
+      </section>
+    </main>
+    <footer>© 2024 Samuel Pessoal • Atualize este rodapé com seus contatos.</footer>
+  </body>
+</html>
